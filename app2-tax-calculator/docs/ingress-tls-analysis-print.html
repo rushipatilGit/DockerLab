@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Tax Calculator — Ingress &amp; Tomcat TLS Analysis</title>
+  <style>/* PDF print theme for Tax Calculator analysis */
+@page {
+  margin: 22mm 18mm;
+  size: A4;
+}
+
+body {
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.55;
+  color: #1e293b;
+  max-width: 100%;
+}
+
+h1 {
+  font-size: 22pt;
+  font-weight: 700;
+  color: #0f172a;
+  border-bottom: 3px solid #0ea5e9;
+  padding-bottom: 12px;
+  margin-top: 0;
+  page-break-after: avoid;
+}
+
+h2 {
+  font-size: 14pt;
+  color: #0369a1;
+  margin-top: 28px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 6px;
+  page-break-after: avoid;
+}
+
+h3 {
+  font-size: 11pt;
+  color: #334155;
+  margin-top: 18px;
+  page-break-after: avoid;
+}
+
+p, li {
+  text-align: justify;
+  hyphens: auto;
+}
+
+strong {
+  color: #0f172a;
+}
+
+hr {
+  border: none;
+  border-top: 2px solid #e2e8f0;
+  margin: 24px 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 9.5pt;
+  page-break-inside: avoid;
+}
+
+th {
+  background: linear-gradient(180deg, #0ea5e9 0%, #0284c7 100%);
+  color: #fff;
+  font-weight: 600;
+  text-align: left;
+  padding: 10px 12px;
+}
+
+td {
+  border: 1px solid #cbd5e1;
+  padding: 8px 12px;
+  vertical-align: top;
+}
+
+tr:nth-child(even) td {
+  background: #f8fafc;
+}
+
+code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 9pt;
+  background: #f1f5f9;
+  color: #be123c;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 14px 16px;
+  border-radius: 8px;
+  font-size: 8.5pt;
+  line-height: 1.45;
+  overflow-x: auto;
+  page-break-inside: avoid;
+  border-left: 4px solid #0ea5e9;
+}
+
+pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+blockquote {
+  border-left: 4px solid #0ea5e9;
+  margin: 16px 0;
+  padding: 8px 16px;
+  background: #f0f9ff;
+  color: #0c4a6e;
+}
+
+ul, ol {
+  padding-left: 1.4em;
+}
+
+li {
+  margin: 4px 0;
+}
+
+/* Title block from front matter — md-to-pdf may render h1 as title */
+body > h1:first-of-type {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+  color: #fff;
+  border: none;
+  padding: 28px 24px;
+  border-radius: 12px;
+  margin-bottom: 8px;
+}
+
+body > h1:first-of-type + p {
+  font-size: 11pt;
+  color: #64748b;
+}</style>
+</head>
+<body>
+<hr>
+<h2>title: Tax Calculator — Ingress &amp; Tomcat TLS Error Analysis
+author: Technical Analysis Report
+date: November 14, 2026</h2>
+<h1>Tax Calculator — Ingress &amp; Tomcat TLS Error Analysis</h1>
+<p><strong>Report date:</strong> November 14, 2026<br><strong>Application:</strong> Tax Calculator (Kubernetes on AWS)<br><strong>Symptom:</strong> Tomcat <code>Error parsing HTTP request header</code> / <code>Invalid character found in method name</code></p>
+<hr>
+<h2>Executive summary</h2>
+<p>Your Spring Boot service (<strong>service-a</strong>) runs <strong>plain HTTP on port 3000</strong>. The stack trace is <strong>not</strong> a Spring application bug. It occurs when a client sends <strong>TLS (HTTPS) handshake bytes</strong> to that HTTP port. Tomcat interprets the first bytes as an HTTP method name and fails.</p>
+<p>Your <strong>Ingress</strong> manifest has two configuration issues that break <strong><code>/api</code></strong> routing: the backend Service port is <strong>80</strong> instead of <strong>3000</strong>, and the catch-all path <strong><code>/(.*)</code></strong> is listed <strong>before</strong> <strong><code>/api/(.*)</code></strong>.</p>
+<p>Fix the Ingress for correct API traffic. Use <strong><code>http://</code></strong> via the AWS Load Balancer hostname. Treat occasional Tomcat parse errors as noise if the app works over HTTP end-to-end.</p>
+<hr>
+<h2>1. Error breakdown</h2>
+<h3>1.1 Log excerpt</h3>
+<pre><code>2026-11-14T18:28:02.093Z  INFO 1 --- [demo] [io-3000-exec-10] 
+o.apache.coyote.http11.Http11Processor   : Error parsing HTTP request header
+ Note: further occurrences of HTTP request parsing errors will be logged at DEBUG level.
+
+java.lang.IllegalArgumentException: Invalid character found in method name 
+[0x16 0x03 0x01 0x00 0xf2 ...]. HTTP method names must be tokens
+</code></pre>
+<h3>1.2 What the bytes mean</h3>
+<table>
+<thead>
+<tr>
+<th>Bytes</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>0x16</code></td>
+<td>TLS <strong>Handshake</strong> record type</td>
+</tr>
+<tr>
+<td><code>0x03 0x01</code></td>
+<td>TLS version in the record header</td>
+</tr>
+<tr>
+<td>Following bytes</td>
+<td><strong>ClientHello</strong> (certificate negotiation)</td>
+</tr>
+</tbody></table>
+<p>The server expected text like <code>GET /path HTTP/1.1</code> but received a <strong>TLS ClientHello</strong>. Hence: <em>&quot;HTTP method names must be tokens&quot;</em>.</p>
+<h3>1.3 Thread name <code>[io-3000-exec-10]</code></h3>
+<p>Confirms the connection hit <strong>port 3000</strong> — the embedded Tomcat HTTP connector in <strong>service-a</strong>.</p>
+<h3>1.4 Application name <code>[demo]</code></h3>
+<p>Comes from <code>spring.application.name=demo</code> in the <strong>embarkx/tax-service-a</strong> container image, not from Ingress.</p>
+<hr>
+<h2>2. Architecture (intended traffic flow)</h2>
+<pre><code>                    ┌─────────────────────────────────────┐
+   Browser          │  AWS ELB (Ingress Controller LB)   │
+   http://ELB:80 ──►│  nginx Ingress (tax-app-ingress)   │
+                    └──────────────┬──────────────────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              │                    │                    │
+              ▼                    ▼                    │
+     path /(.*)              path /api/(.*)             │
+              │                    │                    │
+              ▼                    ▼                    │
+        frontend:80           service-a:3000           │
+        (static React)        (Spring Boot HTTP)        │
+                                   │                    │
+                                   ▼                    │
+                            service-b:4000               │
+                            (tax computation)            │
+</code></pre>
+<p><strong>Design intent:</strong> HTTP-only inside the cluster. Ingress terminates client traffic on the controller (ports 80/443 on the LoadBalancer) and proxies to backends using <strong>HTTP</strong> unless you add TLS or SSL-passthrough annotations (you did not).</p>
+<hr>
+<h2>3. Manifest review</h2>
+<h3>3.1 service-a — Deployment &amp; Service (<code>app_1.yaml</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Image</td>
+<td><code>embarkx/tax-service-a</code></td>
+</tr>
+<tr>
+<td>Container port</td>
+<td><strong>3000</strong></td>
+</tr>
+<tr>
+<td>Service <code>port</code> / <code>targetPort</code></td>
+<td><strong>3000</strong> / <strong>3000</strong></td>
+</tr>
+<tr>
+<td>Type</td>
+<td>ClusterIP</td>
+</tr>
+<tr>
+<td>Env</td>
+<td><code>TAX_SERVICE_URL=http://service-b:4000</code></td>
+</tr>
+</tbody></table>
+<p>No TLS/SSL configuration on the Spring pod.</p>
+<h3>3.2 service-b — (<code>app_2.yaml</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Container port</td>
+<td><strong>4000</strong></td>
+</tr>
+<tr>
+<td>Service</td>
+<td>port <strong>4000</strong></td>
+</tr>
+</tbody></table>
+<h3>3.3 frontend — (<code>app.yaml</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Image</td>
+<td><code>rushipatildocker/tax-calculatorfrontend-ingress:latest</code></td>
+</tr>
+<tr>
+<td>Container port</td>
+<td><strong>80</strong></td>
+</tr>
+<tr>
+<td>Service</td>
+<td>port <strong>80</strong></td>
+</tr>
+</tbody></table>
+<h3>3.4 Ingress controller (<code>deploy.yaml</code>)</h3>
+<ul>
+<li><strong>ingress-nginx</strong> controller v1.9.6</li>
+<li>LoadBalancer Service: ports <strong>80</strong> (HTTP) and <strong>443</strong> (HTTPS) for <strong>clients → ingress only</strong></li>
+<li>Does not enable HTTPS on service-a port 3000</li>
+</ul>
+<h3>3.5 tax-app-ingress — live cluster state</h3>
+<p><strong>LoadBalancer hostname:</strong></p>
+<p><code>a0f393b2d741a4adba55b53c778a9b13-866954363.us-east-2.elb.amazonaws.com</code></p>
+<p><strong>Annotations:</strong></p>
+<ul>
+<li><code>nginx.ingress.kubernetes.io/use-regex: &quot;true&quot;</code></li>
+<li><code>nginx.ingress.kubernetes.io/rewrite-target: /$1</code></li>
+</ul>
+<hr>
+<h2>4. Ingress defects (root cause of broken <code>/api</code>)</h2>
+<h3>4.1 Wrong Service port for service-a</h3>
+<p><strong>Current (incorrect):</strong></p>
+<pre><code class="language-yaml">backend:
+  service:
+    name: service-a
+    port:
+      number: 80   # ❌ does not exist on Service
+</code></pre>
+<p><strong>Actual Service port:</strong> <strong>3000</strong> only.</p>
+<p><strong>Effect:</strong> No endpoints for <code>service-a:80</code> → NGINX cannot route <code>/api</code> to Spring → <strong>503</strong> or traffic never reaches the app.</p>
+<p><strong>Correct:</strong></p>
+<pre><code class="language-yaml">port:
+  number: 3000
+</code></pre>
+<h3>4.2 Path rule order</h3>
+<p><strong>Current order:</strong></p>
+<ol>
+<li><code>/(.*)</code> → <strong>frontend</strong> (matches almost everything)</li>
+<li><code>/api/(.*)</code> → service-a</li>
+</ol>
+<p>With regex, the catch-all often wins for URLs like <code>/api/price</code>, so API calls may hit <strong>frontend</strong> instead of <strong>service-a</strong>.</p>
+<p><strong>Correct order:</strong></p>
+<ol>
+<li><code>/api/(.*)</code> → <strong>service-a:3000</strong> first  </li>
+<li><code>/(.*)</code> → <strong>frontend:80</strong> second</li>
+</ol>
+<h3>4.3 Rewrite behavior</h3>
+<p>With <code>rewrite-target: /$1</code>:</p>
+<ul>
+<li>Request: <code>/api/price?amount=100&amp;country=IN</code></li>
+<li>Upstream path becomes: <code>/price?amount=100&amp;country=IN</code> (matches Spring controllers that expect <code>/price</code>, not <code>/api/price</code>)</li>
+</ul>
+<hr>
+<h2>5. Recommended Ingress manifest</h2>
+<pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tax-app-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: &quot;true&quot;
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: service-a
+                port:
+                  number: 3000
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+</code></pre>
+<h3>Apply &amp; verify</h3>
+<pre><code class="language-bash">kubectl apply -f ingress-fixed.yaml
+kubectl describe ingress tax-app-ingress
+kubectl get endpoints service-a
+</code></pre>
+<h3>Test URLs (use HTTP)</h3>
+<pre><code class="language-text">http://a0f393b2d741a4adba55b53c778a9b13-866954363.us-east-2.elb.amazonaws.com/
+http://a0f393b2d741a4adba55b53c778a9b13-866954363.us-east-2.elb.amazonaws.com/api/price?amount=100&amp;country=IN
+</code></pre>
+<hr>
+<h2>6. Tomcat TLS error — likely causes</h2>
+<p>These explain TLS bytes on <strong>port 3000</strong>; they are <strong>separate</strong> from the Ingress port/path bugs.</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Scenario</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Port-forward + HTTPS</td>
+<td><code>kubectl port-forward</code> to <strong>3000:3000</strong>, then browser uses <strong><code>https://localhost:3000</code></strong></td>
+</tr>
+<tr>
+<td>Wrong scheme on app port</td>
+<td>Any client using <strong>HTTPS</strong> against <strong>pod:3000</strong> or mis-forwarded port</td>
+</tr>
+<tr>
+<td>Background noise</td>
+<td>TLS port scans (less common on ClusterIP unless something exposes 3000)</td>
+</tr>
+<tr>
+<td>Not normal Ingress</td>
+<td>Correct Ingress → <strong>HTTP</strong> → <code>service-a:3000</code> does <strong>not</strong> produce this error</td>
+</tr>
+</tbody></table>
+<p><strong>Note:</strong> After the first occurrence, Tomcat logs repeats at <strong>DEBUG</strong> (per log message).</p>
+<hr>
+<h2>7. Quick reference</h2>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th>Wrong / risky</th>
+<th>Correct</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>API backend port</td>
+<td><code>80</code></td>
+<td><strong>3000</strong></td>
+</tr>
+<tr>
+<td>Path order</td>
+<td><code>/(.*)</code> before <code>/api</code></td>
+<td><strong><code>/api</code> first</strong>, then <code>/(.*)</code></td>
+</tr>
+<tr>
+<td>Client access</td>
+<td><code>https://…:3000</code>, port-forward + HTTPS</td>
+<td><strong><code>http://</code> ELB hostname</strong></td>
+</tr>
+<tr>
+<td>Tomcat log</td>
+<td>—</td>
+<td>Fix Ingress first; ignore stray TLS probes if HTTP works</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>8. Docker Compose comparison (local)</h2>
+<p>For local <code>docker-compose.yml</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th>Host port</th>
+<th>Container port</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>service-a</td>
+<td>3100</td>
+<td>3000</td>
+</tr>
+<tr>
+<td>service-b</td>
+<td>3200</td>
+<td>4000</td>
+</tr>
+<tr>
+<td>frontend</td>
+<td>5173</td>
+<td>80</td>
+</tr>
+</tbody></table>
+<p>Use <strong><code>http://localhost:3100</code></strong> from the host, not <strong><code>https://</code></strong>.</p>
+<p>Frontend <code>.env</code> may use <code>VITE_API_URL=/api</code>; the stock nginx image needs a <strong>proxy</strong> for <code>/api</code> unless you use <code>VITE_API_URL=http://localhost:3100</code> for Docker builds.</p>
+<hr>
+<h2>9. Conclusion</h2>
+<ol>
+<li><strong>Tomcat error</strong> = <strong>HTTPS/TLS on HTTP port 3000</strong>, not a misconfigured Spring property.  </li>
+<li><strong>Ingress</strong> must route <strong><code>/api</code></strong> to <strong>service-a:3000</strong> with <strong><code>/api</code> ordered before</strong> the catch-all.  </li>
+<li>Validate with <strong><code>curl</code> over HTTP</strong> against the ELB hostname after applying the fixed Ingress.  </li>
+<li>Occasional parse errors in logs are acceptable if user-facing HTTP traffic succeeds.</li>
+</ol>
+<hr>
+<p><em>End of report</em></p>
+
+</body>
+</html>
