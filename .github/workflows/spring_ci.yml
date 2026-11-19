@@ -54,9 +54,10 @@ jobs:
           - name: Build and Push Docker Image
             uses: docker/build-push-action@v6
             with:
-                context: docker/app1-hello/springboot/hello-spring/Dockerfile
+                context: docker/app1-hello/springboot/hello-spring
                 push: true
                 tags: |
                     ${{ secrets.DOCKER_USERNAME }}/hello-spring:latest   
                     ${{ secrets.DOCKER_USERNAME }}/hello-spring:${{ github.sha }}    
                     ${{ secrets.DOCKER_USERNAME }}/hello-spring:${{ github.ref_name }}
+                    
