@@ -42,7 +42,7 @@ jobs:
                 java-version: '21'
 
           - name: Build JAR for Docker
-            working-directory: docker/app1-hello/springboot/hello-spring/Dockerfile
+            working-directory: docker/app1-hello/springboot/hello-spring
             run: mvn -B clean package -DskipTests
 
           - name: Login to DockerHub
@@ -54,10 +54,10 @@ jobs:
           - name: Build and Push Docker Image
             uses: docker/build-push-action@v6
             with:
-                context: docker/app1-hello/springboot/hello-spring/Dockerfile
+                context: docker/app1-hello/springboot/Dockerfile
                 push: true
                 tags: |
                     ${{ secrets.DOCKER_USERNAME }}/hello-spring:latest   
                     ${{ secrets.DOCKER_USERNAME }}/hello-spring:${{ github.sha }}    
                     ${{ secrets.DOCKER_USERNAME }}/hello-spring:${{ github.ref_name }}
-
+                    
