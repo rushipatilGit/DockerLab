@@ -2,11 +2,11 @@ name: Hello Spring Boot App to AWS EKS
 
 on:
   workflow_dispatch:
-    #push:
+  push:
     # branches:
     #     - main
-    # paths:
-    #     - "docker/app1-hello/springboot/hello-spring"
+      paths:
+         - "docker/app1-hello/springboot/hello-spring"
 
 jobs:
     build-test:

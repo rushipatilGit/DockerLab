@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: app1-hello
-          image: embarkx/hello-spring
+          image: rushipatildocker/hello-spring
           env:
             - name: ENV_VALUE
               value: "Hello from app.yaml"
