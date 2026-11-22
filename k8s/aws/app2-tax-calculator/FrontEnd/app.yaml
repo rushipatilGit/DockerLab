@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: rushipatildocker/tax-calculatorfrontend-ingress:latest
+          image: rushipatildocker/tax-calculator-frontend:latest
           ports:
             - containerPort: 80
 ---
